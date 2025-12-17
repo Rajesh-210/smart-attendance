@@ -13,7 +13,7 @@ pipeline {
         stage('Checkout Code') {
             steps {
                 git branch: 'main',
-                    url: 'https://github.com/<your-username>/smart-attendance.git'
+                    url: 'https://github.com/Rajesh-210/smart-attendance.git'
             }
         }
 
