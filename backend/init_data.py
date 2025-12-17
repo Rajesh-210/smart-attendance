@@ -1,74 +1,121 @@
-import json
-import os
 from datetime import datetime, timedelta
-from config import USERS_FILE, ATTENDANCE_FILE, LEAVES_FILE
+from sqlalchemy.orm import Session
+
+from config import Base, engine, SessionLocal
 from utils import hash_password
+from models import User, Employee, Attendance, Leave  # adjust if Leave model name differs
+
 
 def initialize_data():
-    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
-    today = datetime.now()
-    
-    users = [
-        {
-            "id": 1,
-            "name": "Admin User",
-            "email": "admin@example.com",
-            "password": hash_password("password"),
-            "role": "admin",
-            "department": "Management"
-        },
-        {
-            "id": 2,
-            "name": "John Doe",
-            "email": "emp@example.com",
-            "password": hash_password("password"),
-            "role": "employee",
-            "department": "Engineering"
-        },
-        {
-            "id": 3,
-            "name": "Jane Smith",
-            "email": "jane@example.com",
-            "password": hash_password("password"),
-            "role": "employee",
-            "department": "HR"
-        }
-    ]
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=2)
-    print(f"Users initialized: {len(users)} users created")
-    
-    # Initialize with empty attendance records for functional check-in/check-out
-    with open(ATTENDANCE_FILE, 'w') as f:
-        json.dump([], f, indent=2)
-    print("Attendance file initialized - ready for functional check-in/check-out")
-    
-    # Initialize with sample leave requests for demo
-    sample_leaves = [
-        {
-            "id": 1,
-            "user_id": 2,
-            "start_date": (today + timedelta(days=5)).strftime("%Y-%m-%d"),
-            "end_date": (today + timedelta(days=7)).strftime("%Y-%m-%d"),
-            "reason": "Annual vacation",
-            "status": "pending",
-            "created_at": today.isoformat()
-        },
-        {
-            "id": 2,
-            "user_id": 3,
-            "start_date": (today + timedelta(days=3)).strftime("%Y-%m-%d"),
-            "end_date": (today + timedelta(days=4)).strftime("%Y-%m-%d"),
-            "reason": "Medical appointment",
-            "status": "pending",
-            "created_at": today.isoformat()
-        }
-    ]
-    
-    with open(LEAVES_FILE, 'w') as f:
-        json.dump(sample_leaves, f, indent=2)
-    print(f"Leaves file initialized with {len(sample_leaves)} sample requests")
+    # =========================
+    # CREATE TABLES
+    # =========================
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created")
+
+    db: Session = SessionLocal()
+
+    try:
+        # =========================
+        # CREATE ADMIN USER
+        # =========================
+        if not db.query(User).filter(User.employee_id == "admin@example.com").first():
+            admin_employee = Employee(
+                employee_id="admin@example.com",
+                full_name="Admin User",
+                email="admin@example.com",
+                department="Management",
+                role="ADMIN"
+            )
+
+            admin_user = User(
+                employee_id="admin@example.com",
+                password_hash=hash_password("password")
+            )
+
+            db.add(admin_employee)
+            db.add(admin_user)
+            print("✅ Admin user created")
+
+        # =========================
+        # CREATE EMPLOYEE USERS
+        # =========================
+        employees_data = [
+            {
+                "employee_id": "emp@example.com",
+                "full_name": "John Doe",
+                "email": "emp@example.com",
+                "department": "Engineering",
+                "role": "EMPLOYEE"
+            },
+            {
+                "employee_id": "jane@example.com",
+                "full_name": "Jane Smith",
+                "email": "jane@example.com",
+                "department": "HR",
+                "role": "EMPLOYEE"
+            }
+        ]
+
+        for emp in employees_data:
+            if not db.query(User).filter(User.employee_id == emp["employee_id"]).first():
+                employee = Employee(**emp)
+                user = User(
+                    employee_id=emp["employee_id"],
+                    password_hash=hash_password("password")
+                )
+                db.add(employee)
+                db.add(user)
+                print(f"✅ User created: {emp['employee_id']}")
+
+        # =========================
+        # SAMPLE ATTENDANCE (OPTIONAL)
+        # =========================
+        today = datetime.utcnow().date()
+
+        if not db.query(Attendance).first():
+            sample_attendance = Attendance(
+                employee_id="emp@example.com",
+                date=today,
+                check_in=datetime.utcnow(),
+                check_out=None,
+                status="PRESENT"
+            )
+            db.add(sample_attendance)
+            print("✅ Sample attendance created")
+
+        # =========================
+        # SAMPLE LEAVES (OPTIONAL)
+        # =========================
+        if not db.query(Leave).first():
+            sample_leaves = [
+                Leave(
+                    employee_id="emp@example.com",
+                    start_date=(today + timedelta(days=5)),
+                    end_date=(today + timedelta(days=7)),
+                    reason="Annual vacation",
+                    status="PENDING",
+                    created_at=datetime.utcnow()
+                ),
+                Leave(
+                    employee_id="jane@example.com",
+                    start_date=(today + timedelta(days=3)),
+                    end_date=(today + timedelta(days=4)),
+                    reason="Medical appointment",
+                    status="PENDING",
+                    created_at=datetime.utcnow()
+                )
+            ]
+
+            db.add_all(sample_leaves)
+            print("✅ Sample leave requests created")
+
+        db.commit()
+        print("🎉 Initial data setup completed successfully")
+
+    finally:
+        db.close()
+
 
 if __name__ == "__main__":
     initialize_data()
-    print("Data initialized successfully")
