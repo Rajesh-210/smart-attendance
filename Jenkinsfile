@@ -19,7 +19,7 @@ pipeline {
 
         stage('Build Backend Image') {
             steps {
-                dir('smart-attendance/backend') {
+                dir('backend') {
                     sh '''
                     docker build -t $BACKEND_IMAGE .
                     '''
@@ -29,7 +29,7 @@ pipeline {
 
         stage('Build Frontend Image') {
             steps {
-                dir('smart-attendance/frontend') {
+                dir('frontend') {
                     sh '''
                     docker build -t $FRONTEND_IMAGE .
                     '''
@@ -71,7 +71,7 @@ pipeline {
 
     post {
         success {
-            echo "✅ Smart Attendance application deployed successfully"
+            echo "✅ Smart Attendance deployed successfully"
         }
         failure {
             echo "❌ Deployment failed"
