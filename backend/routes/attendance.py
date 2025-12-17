@@ -1,124 +1,174 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Header
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
-from config import ATTENDANCE_FILE
-from utils import (
-    read_json_file, write_json_file, get_next_id, verify_token
-)
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from datetime import date, datetime
 
-router = APIRouter()
+from utils import get_current_user, require_admin, get_db
+from models import Attendance, Employee
 
-class AttendanceRequest(BaseModel):
-    user_id: int
+router = APIRouter(prefix="/api/attendance", tags=["Attendance"])
 
-class AttendanceResponse(BaseModel):
-    id: int
-    user_id: int
-    date: str
-    check_in: Optional[str] = None
-    check_out: Optional[str] = None
 
-def get_current_user(authorization: str = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ")[1]
-    payload = verify_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return payload
-
+# =========================
+# CHECK-IN
+# =========================
 @router.post("/check-in")
-async def check_in(request: AttendanceRequest, current_user: dict = Depends(get_current_user)):
-    attendance_records = read_json_file(ATTENDANCE_FILE)
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    existing = next(
-        (a for a in attendance_records if a['user_id'] == request.user_id and a['date'] == today),
-        None
+def check_in(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    today = date.today()
+
+    record = (
+        db.query(Attendance)
+        .filter(
+            Attendance.employee_id == current_user.employee_id,
+            Attendance.date == today
+        )
+        .first()
     )
-    
-    if existing and existing.get('check_in'):
+
+    if record and record.check_in:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Already checked in today"
         )
-    
-    if existing:
-        existing['check_in'] = datetime.now().isoformat()
+
+    if not record:
+        record = Attendance(
+            employee_id=current_user.employee_id,
+            date=today,
+            check_in=datetime.utcnow(),
+            status="PRESENT"
+        )
+        db.add(record)
     else:
-        new_record = {
-            "id": get_next_id(attendance_records),
-            "user_id": request.user_id,
-            "date": today,
-            "check_in": datetime.now().isoformat(),
-            "check_out": None
-        }
-        attendance_records.append(new_record)
-    
-    write_json_file(ATTENDANCE_FILE, attendance_records)
+        record.check_in = datetime.utcnow()
+
+    db.commit()
     return {"message": "Checked in successfully"}
 
+
+# =========================
+# CHECK-OUT
+# =========================
 @router.post("/check-out")
-async def check_out(request: AttendanceRequest, current_user: dict = Depends(get_current_user)):
-    attendance_records = read_json_file(ATTENDANCE_FILE)
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    existing = next(
-        (a for a in attendance_records if a['user_id'] == request.user_id and a['date'] == today),
-        None
+def check_out(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    today = date.today()
+
+    record = (
+        db.query(Attendance)
+        .filter(
+            Attendance.employee_id == current_user.employee_id,
+            Attendance.date == today
+        )
+        .first()
     )
-    
-    if not existing or not existing.get('check_in'):
+
+    if not record or not record.check_in:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Must check in first"
+            detail="You must check in first"
         )
-    
-    if existing.get('check_out'):
+
+    if record.check_out:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Already checked out today"
         )
-    
-    existing['check_out'] = datetime.now().isoformat()
-    write_json_file(ATTENDANCE_FILE, attendance_records)
+
+    record.check_out = datetime.utcnow()
+    db.commit()
+
     return {"message": "Checked out successfully"}
 
-@router.get("/all")
-async def get_all_attendance(current_user: dict = Depends(get_current_user)):
-    from config import USERS_FILE
-    attendance_records = read_json_file(ATTENDANCE_FILE)
-    users = read_json_file(USERS_FILE)
-    
-    user_map = {u['id']: u['name'] for u in users}
-    
-    result = []
-    for record in attendance_records:
-        result.append({
-            **record,
-            "user_name": user_map.get(record['user_id'], 'Unknown')
-        })
-    
-    return result
 
-@router.get("/{user_id}")
-async def get_today_attendance(user_id: int, current_user: dict = Depends(get_current_user)):
-    attendance_records = read_json_file(ATTENDANCE_FILE)
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    record = next(
-        (a for a in attendance_records if a['user_id'] == user_id and a['date'] == today),
-        None
+# =========================
+# GET TODAY'S ATTENDANCE (SELF)
+# =========================
+@router.get("/today")
+def get_today_attendance(
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    today = date.today()
+
+    record = (
+        db.query(Attendance)
+        .filter(
+            Attendance.employee_id == current_user.employee_id,
+            Attendance.date == today
+        )
+        .first()
     )
-    
+
     if not record:
         return {
-            "id": 0,
-            "user_id": user_id,
             "date": today,
             "check_in": None,
-            "check_out": None
+            "check_out": None,
+            "status": "ABSENT"
         }
-    
-    return record
+
+    return {
+        "date": record.date,
+        "check_in": record.check_in,
+        "check_out": record.check_out,
+        "status": record.status
+    }
+
+
+# =========================
+# GET ALL ATTENDANCE (ADMIN ONLY)
+# =========================
+@router.get("/all")
+def get_all_attendance(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    records = (
+        db.query(Attendance, Employee)
+        .join(Employee, Attendance.employee_id == Employee.employee_id)
+        .order_by(Attendance.date.desc())
+        .all()
+    )
+
+    return [
+        {
+            "employee_id": emp.employee_id,
+            "name": emp.full_name,
+            "department": emp.department,
+            "date": att.date,
+            "check_in": att.check_in,
+            "check_out": att.check_out,
+            "status": att.status
+        }
+        for att, emp in records
+    ]
+
+
+# =========================
+# GET ATTENDANCE BY EMPLOYEE (ADMIN)
+# =========================
+@router.get("/employee/{employee_id}")
+def get_employee_attendance(
+    employee_id: str,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    records = (
+        db.query(Attendance)
+        .filter(Attendance.employee_id == employee_id)
+        .order_by(Attendance.date.desc())
+        .all()
+    )
+
+    if not records:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No attendance records found"
+        )
+
+    return records
