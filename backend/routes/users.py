@@ -1,142 +1,226 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Header
-from pydantic import BaseModel
-from config import USERS_FILE
-from utils import read_json_file, write_json_file, verify_token, hash_password, get_next_id
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
 
-router = APIRouter()
+from utils import get_current_user, require_admin, get_db, hash_password
+from models import User, Employee
+
+router = APIRouter(prefix="/api/users", tags=["Users"])
+
+# =========================
+# SCHEMAS
+# =========================
 
 class UserCreate(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
-    role: str
-    department: str
+    role: str = "EMPLOYEE"
+    department: str = "General"
 
 class UserUpdate(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     role: str
     department: str
 
-def get_current_user(authorization: str = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = authorization.split(" ")[1]
-    payload = verify_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return payload
 
+# =========================
+# GET ALL USERS (ADMIN)
+# =========================
 @router.get("")
-async def get_all_users(current_user: dict = Depends(get_current_user)):
-    users = read_json_file(USERS_FILE)
+def get_all_users(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    users = (
+        db.query(Employee)
+        .order_by(Employee.full_name)
+        .all()
+    )
+
     return [
         {
-            "id": u['id'],
-            "name": u['name'],
-            "email": u['email'],
-            "role": u['role'],
-            "department": u['department']
+            "employee_id": u.employee_id,
+            "name": u.full_name,
+            "email": u.email,
+            "role": u.role,
+            "department": u.department
         }
         for u in users
     ]
 
-@router.get("/{user_id}")
-async def get_user(user_id: int, current_user: dict = Depends(get_current_user)):
-    users = read_json_file(USERS_FILE)
-    user = next((u for u in users if u['id'] == user_id), None)
-    
+
+# =========================
+# GET SINGLE USER (ADMIN)
+# =========================
+@router.get("/{employee_id}")
+def get_user(
+    employee_id: str,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    user = (
+        db.query(Employee)
+        .filter(Employee.employee_id == employee_id)
+        .first()
+    )
+
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
     return {
-        "id": user['id'],
-        "name": user['name'],
-        "email": user['email'],
-        "role": user['role'],
-        "department": user['department']
+        "employee_id": user.employee_id,
+        "name": user.full_name,
+        "email": user.email,
+        "role": user.role,
+        "department": user.department
     }
 
-@router.post("")
-async def create_user(user_data: UserCreate, current_user: dict = Depends(get_current_user)):
-    users = read_json_file(USERS_FILE)
-    
-    # Check if email already exists
-    existing_user = next((u for u in users if u['email'] == user_data.email), None)
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already exists")
-    
-    # Create new user
-    new_user = {
-        "id": get_next_id(users),
-        "name": user_data.name,
-        "email": user_data.email,
-        "password": hash_password(user_data.password),
-        "role": user_data.role,
-        "department": user_data.department
-    }
-    
-    users.append(new_user)
-    write_json_file(USERS_FILE, users)
-    
+
+# =========================
+# CREATE USER (ADMIN)
+# =========================
+@router.post("", status_code=201)
+def create_user(
+    user_data: UserCreate,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    if db.query(User).filter(User.employee_id == user_data.email).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already exists"
+        )
+
+    employee = Employee(
+        employee_id=user_data.email,
+        full_name=user_data.name,
+        email=user_data.email,
+        department=user_data.department,
+        role=user_data.role
+    )
+
+    user = User(
+        employee_id=user_data.email,
+        password_hash=hash_password(user_data.password)
+    )
+
+    db.add(employee)
+    db.add(user)
+    db.commit()
+
     return {
-        "id": new_user['id'],
-        "name": new_user['name'],
-        "email": new_user['email'],
-        "role": new_user['role'],
-        "department": new_user['department']
+        "employee_id": employee.employee_id,
+        "name": employee.full_name,
+        "email": employee.email,
+        "role": employee.role,
+        "department": employee.department
     }
 
-@router.put("/{user_id}")
-async def update_user(user_id: int, user_data: UserUpdate, current_user: dict = Depends(get_current_user)):
-    users = read_json_file(USERS_FILE)
-    user_index = next((i for i, u in enumerate(users) if u['id'] == user_id), None)
-    
-    if user_index is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Check if email already exists (excluding current user)
-    existing_user = next((u for i, u in enumerate(users) if u['email'] == user_data.email and i != user_index), None)
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already exists")
-    
-    # Update user
-    users[user_index].update({
-        "name": user_data.name,
-        "email": user_data.email,
-        "role": user_data.role,
-        "department": user_data.department
-    })
-    
-    write_json_file(USERS_FILE, users)
-    
+
+# =========================
+# UPDATE USER (ADMIN)
+# =========================
+@router.put("/{employee_id}")
+def update_user(
+    employee_id: str,
+    user_data: UserUpdate,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    employee = (
+        db.query(Employee)
+        .filter(Employee.employee_id == employee_id)
+        .first()
+    )
+
+    if not employee:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Prevent email collision
+    if (
+        employee.email != user_data.email
+        and db.query(Employee)
+        .filter(Employee.email == user_data.email)
+        .first()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already exists"
+        )
+
+    employee.full_name = user_data.name
+    employee.email = user_data.email
+    employee.department = user_data.department
+    employee.role = user_data.role
+
+    # Sync employee_id if email changed
+    if employee.employee_id != user_data.email:
+        user = (
+            db.query(User)
+            .filter(User.employee_id == employee.employee_id)
+            .first()
+        )
+        if user:
+            user.employee_id = user_data.email
+        employee.employee_id = user_data.email
+
+    db.commit()
+
     return {
-        "id": users[user_index]['id'],
-        "name": users[user_index]['name'],
-        "email": users[user_index]['email'],
-        "role": users[user_index]['role'],
-        "department": users[user_index]['department']
+        "employee_id": employee.employee_id,
+        "name": employee.full_name,
+        "email": employee.email,
+        "role": employee.role,
+        "department": employee.department
     }
 
-@router.delete("/{user_id}")
-async def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
-    users = read_json_file(USERS_FILE)
-    user_index = next((i for i, u in enumerate(users) if u['id'] == user_id), None)
-    
-    if user_index is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+
+# =========================
+# DELETE USER (ADMIN)
+# =========================
+@router.delete("/{employee_id}")
+def delete_user(
+    employee_id: str,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
     # Prevent admin from deleting themselves
-    if current_user['id'] == user_id:
-        raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    
-    deleted_user = users.pop(user_index)
-    write_json_file(USERS_FILE, users)
-    
-    return {
-        "id": deleted_user['id'],
-        "name": deleted_user['name'],
-        "email": deleted_user['email'],
-        "role": deleted_user['role'],
-        "department": deleted_user['department']
-    }
+    if admin.employee_id == employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete yourself"
+        )
+
+    employee = (
+        db.query(Employee)
+        .filter(Employee.employee_id == employee_id)
+        .first()
+    )
+
+    if not employee:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.employee_id == employee_id)
+        .first()
+    )
+
+    if user:
+        db.delete(user)
+
+    db.delete(employee)
+    db.commit()
+
+    return {"message": "User deleted successfully"}
