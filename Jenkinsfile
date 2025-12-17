@@ -2,16 +2,18 @@ pipeline {
     agent any
 
     environment {
-        BACKEND_IMAGE     = "smart-attendance-backend"
-        FRONTEND_IMAGE    = "smart-attendance-frontend"
+        BACKEND_IMAGE      = "smart-attendance-backend"
+        FRONTEND_IMAGE     = "smart-attendance-frontend"
 
-        BACKEND_CONTAINER = "attendance-backend"
+        BACKEND_CONTAINER  = "attendance-backend"
         FRONTEND_CONTAINER = "attendance-frontend"
-        DB_CONTAINER      = "attendance-db"
+        DB_CONTAINER       = "attendance-db"
 
-        POSTGRES_DB       = "attendance"
-        POSTGRES_USER     = "attendance_user"
-        POSTGRES_PASSWORD = "strongpassword"
+        DOCKER_NETWORK     = "attendance-net"
+
+        POSTGRES_DB        = "attendance"
+        POSTGRES_USER      = "attendance_user"
+        POSTGRES_PASSWORD  = "strongpassword"
 
         DATABASE_URL = "postgresql://attendance_user:strongpassword@attendance-db:5432/attendance"
     }
@@ -45,6 +47,15 @@ pipeline {
             }
         }
 
+        stage('Create Docker Network') {
+            steps {
+                sh '''
+                docker network inspect $DOCKER_NETWORK >/dev/null 2>&1 || \
+                docker network create $DOCKER_NETWORK
+                '''
+            }
+        }
+
         stage('Stop & Remove Old Containers') {
             steps {
                 sh '''
@@ -60,10 +71,10 @@ pipeline {
                 sh '''
                 docker run -d \
                   --name $DB_CONTAINER \
+                  --network $DOCKER_NETWORK \
                   -e POSTGRES_DB=$POSTGRES_DB \
                   -e POSTGRES_USER=$POSTGRES_USER \
                   -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD \
-                  -p 5432:5432 \
                   postgres:15
                 '''
             }
@@ -72,7 +83,7 @@ pipeline {
         stage('Wait for Database') {
             steps {
                 sh '''
-                echo "⏳ Waiting for PostgreSQL to be ready..."
+                echo "⏳ Waiting for PostgreSQL to initialize..."
                 sleep 15
                 '''
             }
@@ -83,6 +94,7 @@ pipeline {
                 sh '''
                 docker run -d \
                   --name $BACKEND_CONTAINER \
+                  --network $DOCKER_NETWORK \
                   -p 8000:8000 \
                   -e DATABASE_URL=$DATABASE_URL \
                   $BACKEND_IMAGE
@@ -95,6 +107,7 @@ pipeline {
                 sh '''
                 docker run -d \
                   --name $FRONTEND_CONTAINER \
+                  --network $DOCKER_NETWORK \
                   -p 80:80 \
                   $FRONTEND_IMAGE
                 '''
